@@ -1,0 +1,87 @@
+properties([
+  parameters([
+    string(name: 'rhost_ip', defaultValue: '192.168.100.137', description: 'target node ip address'),
+    string(name: 'ssh_creds', defaultValue: 'ubuntu_ssh', description: 'ssh credentials id for target node'),
+    string(name: 'git_branch', defaultValue: 'master', description: 'git branch/tag name')
+   ])
+])
+string d_path = "project"
+//${params.d_path_p}"
+string s_path = "intermediate.02"
+def remote = [:]
+remote.name = "project"
+//${params.rhost_name}"
+remote.host = "${params.rhost_ip}"
+remote.allowAnyHosts = true
+node {
+  withCredentials([sshUserPrivateKey(credentialsId: "${params.ssh_creds}", keyFileVariable: 'identity', passphraseVariable: '', usernameVariable: 'userName')
+      ]) {
+        remote.user = userName
+        remote.identityFile = identity
+
+  stage('Bootstrap') {
+    sshCommand remote: remote, command: '''if sudo docker version;
+    then echo 'Docker installed';
+    else rm -rf /tmp/scripts-my;
+    sudo apt-get remove docker docker-engine docker.io -y;
+    sudo apt-get -y update;
+    sudo apt-get install -y \
+    apt-transport-https \
+    ca-certificates \
+    curl \
+    software-properties-common;
+
+    sudo add-apt-repository \
+    "deb [arch=amd64] https://download.docker.com/linux/ubuntu \
+    $(lsb_release -cs) \
+    stable";
+
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -;
+
+    sudo apt-get update;
+
+    sudo apt-get install docker-ce -y;
+
+    fi'''
+    sshCommand remote: remote, command: "if sudo docker-compose --version; then echo 'Compose installed'; else sudo curl -L https://github.com/docker/compose/releases/download/1.23.0-rc3/docker-compose-Linux-x86_64 -o /usr/local/bin/docker-compose; sudo chmod +x /usr/local/bin/docker-compose; fi"
+  }
+
+  stage('Deploy preparing') {
+    if (!fileExists(s_path)){
+    new File(s_path).mkdir()
+    }
+
+    dir (s_path) {
+    git(
+       url: 'https://github.com/tomahkvt/intermediate.02'
+    )
+    }
+    sshCommand remote: remote, command: "rm -rf $d_path || true"
+    sshCommand remote: remote, command: "sudo docker rm -f \$(sudo docker ps -a| awk '{ print \$1}')  || true"
+    sshCommand remote: remote, command: "mkdir -p -m 0777 $d_path"
+
+    sh "scp -r -i ${identity} -o StrictHostKeyChecking=no $s_path/* ${userName}@${params.rhost_ip}:$d_path"
+  }
+  stage('Deploy') {
+    sshCommand remote: remote, command: "cd $d_path; sudo docker-compose up -d"
+        }
+
+  stage('Test') {
+    timeout(120) {
+        waitUntil {
+           script {
+             def r = sh script: "wget -q http://${params.rhost_ip}:8080/api/user -O /dev/null", returnStatus: true
+             return (r == 0);
+           }
+        }
+    }
+    sshCommand remote: remote, command: "sudo docker exec -it my_app bash -c 'cd ../ ; mvn test'"
+    sshCommand remote: remote, command: "sudo docker cp my_app:/app/target/surefire-reports $d_path "
+    sh "rm -r -f $s_path/surefire-reports"
+    sh "scp -r -i ${identity} -o StrictHostKeyChecking=no ${userName}@${params.rhost_ip}:$d_path/surefire-reports $s_path/surefire-reports"
+    junit "$s_path/surefire-reports/*.xml"
+
+  }
+
+  }
+}

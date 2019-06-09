@@ -1,0 +1,35 @@
+version: '3'
+services:
+  mysqldb:
+    container_name: mysqldb
+    image: mysql/mysql-server:5.7
+    environment:
+      MYSQL_DATABASE: testdb
+      MYSQL_ROOT_PASSWORD: test
+      MYSQL_ROOT_HOST: '%'
+    ports:
+    - "3306:3306"
+
+  rabbitmq:
+    container_name: "rabbitmq"
+    image: "rabbitmq:3-management"
+    hostname: "rabbitmq"
+    ports:
+    - "15672:15672"
+    - "5672:5672"
+
+  my_app:
+    container_name: my_app
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: my_app
+    volumes:
+    - ./docker/application.properties:/app/target/application.properties
+    ports:
+    - 8080:8080
+    depends_on:
+      - rabbitmq
+      - mysqldb
+    labels:
+      kompose.service.type: LoadBalancer
